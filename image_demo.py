@@ -3,13 +3,13 @@ import cv2
 import time
 import argparse
 import os
-from posenet.posenet_factory import load_model
+
+import posenet
+
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', type=str, default='resnet50')  # mobilenet resnet50
-parser.add_argument('--stride', type=int, default=16)  # 8, 16, 32 (max 16 for mobilenet)
-parser.add_argument('--quant_bytes', type=int, default=4)  # 4 = float
-parser.add_argument('--multiplier', type=float, default=1.0)  # only for mobilenet
+parser.add_argument('--model', type=int, default=101)
+parser.add_argument('--scale_factor', type=float, default=1.0)
 parser.add_argument('--notxt', action='store_true')
 parser.add_argument('--image_dir', type=str, default='./images')
 parser.add_argument('--output_dir', type=str, default='./output')
@@ -18,31 +18,56 @@ args = parser.parse_args()
 
 def main():
 
-    print('Tensorflow version: %s' % tf.__version__)
-    assert tf.__version__.startswith('2.'), "Tensorflow version 2.x must be used!"
+    with tf.Session() as sess:
+        model_cfg, model_outputs = posenet.load_model(args.model, sess)
+        output_stride = model_cfg['output_stride']
 
-    if args.output_dir:
-        if not os.path.exists(args.output_dir):
-            os.makedirs(args.output_dir)
+        if args.output_dir:
+            if not os.path.exists(args.output_dir):
+                os.makedirs(args.output_dir)
 
-    model = args.model  # mobilenet resnet50
-    stride = args.stride  # 8, 16, 32 (max 16 for mobilenet, min 16 for resnet50)
-    quant_bytes = args.quant_bytes  # float
-    multiplier = args.multiplier  # only for mobilenet
+        filenames = [
+            f.path for f in os.scandir(args.image_dir) if f.is_file() and f.path.endswith(('.png', '.jpg'))]
 
-    posenet = load_model(model, stride, quant_bytes, multiplier)
+        start = time.time()
+        for f in filenames:
+            input_image, draw_image, output_scale = posenet.read_imgfile(
+                f, scale_factor=args.scale_factor, output_stride=output_stride)
 
-    filenames = [f.path for f in os.scandir(args.image_dir) if f.is_file() and f.path.endswith(('.png', '.jpg'))]
+            heatmaps_result, offsets_result, displacement_fwd_result, displacement_bwd_result = sess.run(
+                model_outputs,
+                feed_dict={'image:0': input_image}
+            )
 
-    start = time.time()
-    for f in filenames:
-        img = cv2.imread(f)
-        pose_scores, keypoint_scores, keypoint_coords = posenet.estimate_multiple_poses(img)
-        img_poses = posenet.draw_poses(img, pose_scores, keypoint_scores, keypoint_coords)
-        posenet.print_scores(f, pose_scores, keypoint_scores, keypoint_coords)
-        cv2.imwrite(os.path.join(args.output_dir, os.path.relpath(f, args.image_dir)), img_poses)
+            pose_scores, keypoint_scores, keypoint_coords = posenet.decode_multiple_poses(
+                heatmaps_result.squeeze(axis=0),
+                offsets_result.squeeze(axis=0),
+                displacement_fwd_result.squeeze(axis=0),
+                displacement_bwd_result.squeeze(axis=0),
+                output_stride=output_stride,
+                max_pose_detections=10,
+                min_pose_score=0.25)
 
-    print('Average FPS:', len(filenames) / (time.time() - start))
+            keypoint_coords *= output_scale
+
+            if args.output_dir:
+                draw_image = posenet.draw_skel_and_kp(
+                    draw_image, pose_scores, keypoint_scores, keypoint_coords,
+                    min_pose_score=0.25, min_part_score=0.25)
+
+                cv2.imwrite(os.path.join(args.output_dir, os.path.relpath(f, args.image_dir)), draw_image)
+
+            if not args.notxt:
+                print()
+                print("Results for image: %s" % f)
+                for pi in range(len(pose_scores)):
+                    if pose_scores[pi] == 0.:
+                        break
+                    print('Pose #%d, score = %f' % (pi, pose_scores[pi]))
+                    for ki, (s, c) in enumerate(zip(keypoint_scores[pi, :], keypoint_coords[pi, :, :])):
+                        print('Keypoint %s, score = %f, coord = %s' % (posenet.PART_NAMES[ki], s, c))
+
+        print('Average FPS:', len(filenames) / (time.time() - start))
 
 
 if __name__ == "__main__":

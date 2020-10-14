@@ -1,14 +1,8 @@
 images/*
 output/*
-output_old/*
 .idea/*
 .idea
 _models/*
-_tf_models/*
-_tfjs_models/*
-_posenet_weights/*
-docker/requirements.txt
-*.mp4
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -180,7 +174,6 @@ cmake-build-*/
 
 # IntelliJ
 out/
-output.txt
 
 # mpeltonen/sbt-idea plugin
 .idea_modules/
